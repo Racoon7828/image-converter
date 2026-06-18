@@ -78,11 +78,29 @@ def _prepare_mode(img: Image.Image, output_format: str) -> Image.Image:
     return img
 
 
+_rembg_session = None
+
+def get_rembg_session():
+    global _rembg_session
+    if _rembg_session is None:
+        from rembg import new_session
+        _rembg_session = new_session("birefnet-massive")
+    return _rembg_session
+
+
 def remove_background(img: Image.Image) -> Image.Image:
     from rembg import remove
+    session = get_rembg_session()
     buf = io.BytesIO()
     img.save(buf, format='PNG')
-    result = remove(buf.getvalue())
+    result = remove(
+        buf.getvalue(),
+        session=session,
+        alpha_matting=True,
+        alpha_matting_foreground_threshold=240,
+        alpha_matting_background_threshold=10,
+        alpha_matting_erode_size=10,
+    )
     return Image.open(io.BytesIO(result)).convert('RGBA')
 
 

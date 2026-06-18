@@ -5,8 +5,9 @@ from pathlib import Path
 from tkinter import filedialog, messagebox
 
 import customtkinter as ctk
+from PIL import Image, ImageTk
 
-from converter import SUPPORTED_INPUT, SUPPORTED_OUTPUT, convert_image
+from converter import SUPPORTED_INPUT, SUPPORTED_OUTPUT, convert_image, get_rembg_session
 
 ctk.set_appearance_mode("dark")
 ctk.set_default_color_theme("blue")
@@ -15,7 +16,7 @@ _EXT_DISPLAY = "  ".join(e.lstrip('.').upper() for e in sorted(SUPPORTED_INPUT))
 
 
 class FileItem(ctk.CTkFrame):
-    def __init__(self, parent, path: str, on_remove, row: int):
+    def __init__(self, parent, path: str, on_remove, on_preview, row: int):
         super().__init__(parent, fg_color=("gray88", "gray22"), corner_radius=6)
         self.grid(row=row, column=0, sticky="ew", pady=2)
         self.grid_columnconfigure(0, weight=1)
@@ -27,8 +28,10 @@ class FileItem(ctk.CTkFrame):
                      font=ctk.CTkFont(size=11), text_color=("gray50", "gray60"),
                      anchor="w").grid(row=0, column=0, padx=(8, 2), pady=5, sticky="w")
 
-        ctk.CTkLabel(self, text=name, anchor="w",
-                     font=ctk.CTkFont(size=12)).grid(row=0, column=1, sticky="ew", padx=4, pady=5)
+        name_lbl = ctk.CTkLabel(self, text=name, anchor="w",
+                                 font=ctk.CTkFont(size=12), cursor="hand2")
+        name_lbl.grid(row=0, column=1, sticky="ew", padx=4, pady=5)
+        name_lbl.bind("<Button-1>", lambda _: on_preview(path))
 
         ctk.CTkButton(self, text="✕", width=26, height=26,
                       fg_color="transparent", hover_color=("gray70", "gray40"),
@@ -38,8 +41,8 @@ class App(ctk.CTk):
     def __init__(self):
         super().__init__()
         self.title("이미지 변환기")
-        self.geometry("860x600")
-        self.minsize(720, 480)
+        self.geometry("1100x620")
+        self.minsize(900, 500)
 
         self._files: list[str] = []
         self._file_widgets: list[FileItem] = []
@@ -51,18 +54,20 @@ class App(ctk.CTk):
     # ── UI 빌드 ────────────────────────────────────────────────────────────────
 
     def _build_ui(self):
-        self.grid_columnconfigure(0, weight=3)
-        self.grid_columnconfigure(1, weight=2)
+        self.grid_columnconfigure(0, weight=1)
+        self.grid_columnconfigure(1, weight=3)
+        self.grid_columnconfigure(2, weight=1)
         self.grid_rowconfigure(1, weight=1)
 
         self._build_toolbar()
         self._build_file_list()
+        self._build_preview()
         self._build_settings()
         self._build_bottom_bar()
 
     def _build_toolbar(self):
         bar = ctk.CTkFrame(self, fg_color="transparent")
-        bar.grid(row=0, column=0, columnspan=2, sticky="ew", padx=12, pady=(12, 0))
+        bar.grid(row=0, column=0, columnspan=3, sticky="ew", padx=12, pady=(12, 0))
 
         ctk.CTkButton(bar, text="+ 파일 추가", width=120, command=self._add_files).pack(side="left", padx=(0, 8))
         ctk.CTkButton(bar, text="폴더 추가", width=110, command=self._add_folder).pack(side="left", padx=(0, 8))
@@ -91,9 +96,23 @@ class App(ctk.CTk):
                                           text_color="gray")
         self._empty_label.grid(row=0, column=0, pady=30)
 
+    def _build_preview(self):
+        frame = ctk.CTkFrame(self)
+        frame.grid(row=1, column=1, sticky="nsew", padx=5, pady=10)
+        frame.grid_rowconfigure(1, weight=1)
+        frame.grid_columnconfigure(0, weight=1)
+
+        ctk.CTkLabel(frame, text="미리보기",
+                     font=ctk.CTkFont(weight="bold")).grid(row=0, column=0, sticky="w", padx=12, pady=(10, 4))
+
+        self._preview_lbl = ctk.CTkLabel(frame, text="파일 이름을 클릭하면\n미리보기가 표시됩니다",
+                                          text_color="gray", image=None)
+        self._preview_lbl.grid(row=1, column=0, sticky="nsew", padx=6, pady=(0, 6))
+        self._preview_photo = None
+
     def _build_settings(self):
         frame = ctk.CTkFrame(self)
-        frame.grid(row=1, column=1, sticky="nsew", padx=(5, 12), pady=10)
+        frame.grid(row=1, column=2, sticky="nsew", padx=(5, 12), pady=10)
         frame.grid_columnconfigure(0, weight=1)
 
         row = 0
@@ -190,7 +209,7 @@ class App(ctk.CTk):
 
     def _build_bottom_bar(self):
         bar = ctk.CTkFrame(self, fg_color="transparent")
-        bar.grid(row=2, column=0, columnspan=2, sticky="ew", padx=12, pady=(0, 12))
+        bar.grid(row=2, column=0, columnspan=3, sticky="ew", padx=12, pady=(0, 12))
         bar.grid_columnconfigure(1, weight=1)
 
         self._convert_btn = ctk.CTkButton(
@@ -253,8 +272,25 @@ class App(ctk.CTk):
     def _append_widget(self, path: str):
         if self._empty_label.winfo_ismapped():
             self._empty_label.grid_remove()
-        w = FileItem(self._list_scroll, path, self._remove_file, len(self._file_widgets))
+        w = FileItem(self._list_scroll, path, self._remove_file, self._show_preview, len(self._file_widgets))
         self._file_widgets.append(w)
+
+    def _show_preview(self, path: str):
+        if Path(path).suffix.lower() == '.svg':
+            self._preview_lbl.configure(image=None, text="SVG 미리보기\n지원 안 됨")
+            self._preview_photo = None
+            return
+
+        self._preview_lbl.update_idletasks()
+        max_w = max(self._preview_lbl.winfo_width() - 20, 300)
+        max_h = max(self._preview_lbl.winfo_height() - 20, 300)
+
+        img = Image.open(path)
+        img.thumbnail((max_w, max_h), Image.LANCZOS)
+        photo = ImageTk.PhotoImage(img)
+
+        self._preview_photo = photo
+        self._preview_lbl.configure(image=photo, text="")
 
     def _rebuild_widgets(self):
         for w in self._file_widgets:
@@ -387,8 +423,7 @@ class App(ctk.CTk):
         orig = sys.stderr
         sys.stderr = _StderrCapture(_update)
         try:
-            from rembg import new_session
-            new_session('u2net')
+            get_rembg_session()
         finally:
             sys.stderr = orig
 
